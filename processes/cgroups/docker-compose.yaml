@@ -1,0 +1,7 @@
+services:
+  coro-sieve:
+    build: .
+    image: coro-sieve:test
+    stdin_open: true
+    tty: true
+    command: ${TIMEOUT:-3}
