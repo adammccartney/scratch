@@ -269,9 +269,100 @@ managed to spawn 2149 children.
 > ...
 
 
+#### System limits
+
+System wide limits are set up by passing config values to the `pam_limits`
+module. The limits of number of processes allowed for the user rocky can be
+set as follows:
+
+
+```
+[rocky@adam cgroups]$ cat > /etc/security/limits.d/rocky.conf <<EOF
+@rocky hard nproc 2048
+@rocky soft nproc 2048
+EOF
+```
+
+Another run of our test program, shows that it runs into trouble more 
+or less where we expect.
+
+```
+ Tue Nov 19 08:51:59 AM UTC 2024 coro-sieve end with 2038 children
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+...
+```
+
+A side note on systmed here - reading the systemd docs would lead you to believe
+that you should always go through systemd config files in order to set up
+limits. In particular, if you are approaching the problem from the perspective
+as a service user who is hitting resource limits, you end up getting directed
+towards the systemd documentation in order to adjust the cgroup configuration
+stuff. There are more details on configuring cgroups for a specific service
+below, but here briefly is how you would set up cgroup limits for a user using
+systemd. Specifically, `systemd.resource-control` will look for config files in
+the form of "Slices".
+
+```
+cat > /etc/systemd/system/user-1000.slice.d/limits.conf <<EOF
+[Slice]
+TasksMax=1024
+```
+
+```
+[rocky@adam ~]$ systemctl show user-1000.slice |grep TasksMax
+TasksMax=1024
+[rocky@adam ~]$ ~/cgroups/entrypoint.sh 300
+ Tue Nov 19 12:30:30 PM UTC 2024 coro-sieve end with 945 children
+/home/rocky/cgroups/entrypoint.sh: fork: retry: Resource temporarily unavailable
+/home/rocky/cgroups/entrypoint.sh: fork: retry: Resource temporarily unavailable
+^C/home/rocky/cgroups/entrypoint.sh: fork: Interrupted system call
+```
+
+The important question though is how will the program behave if the limits set
+by configuring `pam_limits` conflict with those configured through
+`systemd.resource-control`?
+
+```
+[rocky@adam ~]$ ulimit -u
+512
+[rocky@adam ~]$ cat /etc/security/limits.d/user-1000.conf
+@rocky hard nproc 512
+@rocky soft nproc 512
+[rocky@adam ~]$ cat /etc/systemd/system/user-1000.slice.d/limits.conf
+[Slice]
+TasksMax=1024
+```
+
+We run into trouble when the program hits the limts set by
+`/etc/security/limits.d`, i.e. the config values supplied to `pam_limits`.
+
+```
+ Tue Nov 19 02:48:57 PM UTC 2024 coro-sieve end with 489 children
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+```
+
+What's the moral of the story? The limits set by configuring `pam_limits`
+will override those set using `systemd.resource-control`!
+
 ### Containerized version
 
+Okay, so here we want to figure out how to use cgroups to control how our
+container is running. We'll do this by setting limits for the service running
+the container. In the case of this example, that is the docker service which 
+runs the container runtime (containerd).
+
+We want to run the docker-compose script as a systemd service. This has become
+fairly common practice. RedHat seem to have even gone a bit further and adding a
+feature to export running containers to a systemd service file that can be
+installed in one of the expected locations. But many other creative people have
+found ways to do similiar things with docker-compose and systemd[^3].
+
+So where do the ulimits get set for the service? Initially, I thought that 
+adding a Tas
 
 
 [^1]: <https://dl.acm.org/doi/10.1145/359576.359585>
 [^2]: <https://www.cs.dartmouth.edu/~doug/sieve/sieve.pdf>
+[^3]: <https://gist.github.com/mosquito/b23e1c1e5723a7fd9e6568e5cf91180f>

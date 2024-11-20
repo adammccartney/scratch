@@ -4,4 +4,4 @@ services:
     image: coro-sieve:test
     stdin_open: true
     tty: true
-    command: ${TIMEOUT:-3}
+    command: ${TIMEOUT:-120}

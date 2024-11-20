@@ -7,7 +7,7 @@ COPY Makefile /app
 RUN apk update \
   && apk upgrade \
   && apk add -U gcc make musl-dev --no-cache \
-  && make clean && make && make install
+  && make clean && make
 
 FROM alpine:3.20.3
 
@@ -15,9 +15,8 @@ RUN apk update \
  && apk upgrade \
  && apk add -U bash musl-dev --no-cache
 
-COPY --from=builder /usr/local/bin/coro-sieve /usr/local/bin/coro-sieve
-COPY entrypoint.sh /app/entrypoint.sh
-COPY README.md /app/README.md
+COPY --from=builder /app/coro-sieve /usr/local/bin/coro-sieve
+COPY --chmod=0755 entrypoint.sh /app/entrypoint.sh
+COPY --chmod=0755 README.md /app/README.md
 
-USER 1001
 ENTRYPOINT ["/app/entrypoint.sh"]
