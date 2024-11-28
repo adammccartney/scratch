@@ -8,34 +8,9 @@ least 4096 (the system defaults were set to 3288). The user in this case is
 named according to the application, the application gets started by the user in
 a container. Note that this limit was read from initially read from the error
 logs of the application and confirmed through running the `ulimit` command on a
-root container on the node. It would be interesting to see if this limit is 
+root container on the node. It would be interesting to see if this limit is
 specific to the container, or is the default on the host. If it is the latter,
 then it appears to be set to quite a low value. 
-
-Here are the default values on a fresh Rocky 9.4 install. The quickest way to
-get the user limits on a linux system is with the ulimit command. The number of
-processes available to a user is retrieved using the `-u` flag.
-
-```
-[adam@scratchy0 ~]$ ulimit -u
-15380
-```
-
-A look at `/etc/security/limits.conf` shows the file where these limits have
-traditionally been set and managed. As is seemingly the trend and tendency these
-days, systemd also provides an interface to viewing and setting various limits
-for the user. Searching for the default limit of number of processes allowed returns 
-both soft and hard limits.
-
-```
-[adam@scratchy0 ~]$ systemctl show |grep DefaultLimitNPROC                                                                             
-
-DefaultLimitNPROC=15380
-DefaultLimitNPROCSoft=15380
-```
-
-I was kind of surprised to see that this default limit was set at roughly 4
-times larger than the value that is shown when queried from within a container.
 
 ## Some more context
 
@@ -54,8 +29,83 @@ we got the error (they need a max of at least 4096 for NPROC per user). The
 elasticsearch application is getting run by the elasticsearch user in a container
 that is being run by the rke2 service.
 
+The specific errors can be seen in the following output from the container logs:
 
-## What I want to figure out
+```sh
+> kubectl logs -n temporal elasticsearch-master-0
+Defaulted container "elasticsearch" out of: elasticsearch, configure-sysctl (init)
+...
+ERROR: [1] bootstrap checks failed. You must address the points described in the following [1] lines before starting Elasticsearch.
+bootstrap check failure [1] of [1]: max number of threads [3288] for user [elasticsearch] is too low, increase to at least [4096]
+ERROR: Elasticsearch did not exit normally - check the logs at /usr/share/elasticsearch/logs/elasticsearch.log
+```
+
+Here are the limits as visible from the container: 
+
+```sh
+> kubectl debug node/dev-rke2-agent-1 -it --image=busybox
+Creating debugging pod node-debugger-dev-rke2-agent-1-vkclx with container debugger on node dev-rke2-agent-1.
+If you don't see a command prompt, try pressing enter.
+/ # ulimit -u
+3288
+```
+
+Which is the same as the view as root from the node:
+
+```sh
+[rocky@dev-rke2-agent-1 ~]$ ulimit -u
+3288
+```
+
+One question that emerges at this point is what is setting this limit? So,
+without going through all the specifics, it turned out not to be anything that
+was getting set in the traditional pam/systemd/cloud-init config steps, but
+rather a setting in the Proxmox template that was causing the VMs to be created
+with hotplug enabled. There's an interesting discussion of the problem on the
+proxmox mailing list[^4]. So, there was a long an meandering road of testing
+various config settings that eventually landed at the hotplugging/numa issue.
+And one of the things that got tested along the way was how & if cgroups were
+affecting the setting. That's pretty much what I want to write about in this 
+post.
+
+
+
+A look at `/etc/security/limits.conf` shows the file where these limits have
+traditionally been set and managed. As is seemingly the trend and tendency these
+days, systemd also provides an interface to viewing and setting various limits
+for the user. Searching for the default limit of number of processes allowed returns 
+both soft and hard limits.
+
+I was kind of surprised to see that this default limit was set at roughly 4
+times larger than the value that is shown when queried from within a container.
+
+
+### So what is setting the limits?
+
+#### Is it the pam_limits config files
+
+
+#### Is it rlimit?
+
+#### Is it systemd-system.conf?
+
+It doesn't appear so. Accoring to the systmed-system.conf manpage
+
+<pre>
+NAME
+       systemd-system.conf, system.conf.d, systemd-user.conf, user.conf.d - System and session
+       service manager configuration files
+
+SYNOPSIS
+       /etc/systemd/system.conf, /etc/systemd/system.conf.d/*.conf,
+       /run/systemd/system.conf.d/*.conf, /usr/lib/systemd/system.conf.d/*.conf
+
+       ~/.config/systemd/user.conf, /etc/systemd/user.conf, /etc/systemd/user.conf.d/*.conf,
+       /run/systemd/user.conf.d/*.conf, /usr/lib/systemd/user.conf.d/*.conf
+</pre>
+
+
+## What I want to figure out about cgroups
 
 How do cgroups really work? i.e. what view of the system resources is the
 elasticsearch user seeing?
@@ -64,6 +114,7 @@ How can we adapt the limits so that the elasticsearch user has enough?
 
 What's the difference between setting limits using `systemd.exec` and cgroups
 using `systemd.resource-control`?
+
 
 ## plan of action
 
@@ -80,96 +131,29 @@ using `systemd.resource-control`?
 In his paper on Communicating Sequential Processes[^1] Tony Hoare mentions a
 really fun paper by Douglas McIlroy that sketches out a concurrent version
 of the Sieve of Eratosthenes[^2]. The paper contains versions of the program
-in c, shell and haskell. Here is the original c version with some additional comments
-from me:
+in c, shell and haskell. 
 
-```c
-  #include <stdio.h>
-  #include <unistd.h>
-
-  void source() {
-      int n;
-      for(n = 2; ; n++) {
-          // write an int to stdout (fd1) each time
-          write(1, &n, sizeof(n));
-      }
-  }
-
-
-  // this filter is created for each prime found,
-  // it's job is to filter any multiples of that prime from a passing stream
-  void cull(int p) {
-      int n;
-      for(;;) {
-          // read an int from stdint (fd0) each time
-          read(0, &n, sizeof(n));
-          if (n % p != 0) { // p is not factor of n
-              // write n to stdout (fd1)
-              write(1, &n, sizeof(n));
-          }
-      }
-  }
-
-  /* connect stdint (k=0) or stdout (k=1) to pipe pd */
-  void redirect(int k, int pd[2]) {
-      // duplicate the file descriptor k
-      dup2(pd[k], k);
-      close(pd[0]);
-      close(pd[1]);
-  }
-
-  void sink() {
-      int pd[2];
-      int p; /* a prime */     
-      for (;;) {
-          // read a prime from stdin (fd0)
-          read(0, &p, sizeof(p));
-          printf("%d\n", p);
-          fflush(stdout);
-          pipe(pd);
-          if(fork()) {
-              /* redirect stdin of this process to input of pipe pd */
-              redirect(0, pd);
-              continue;
-          } else {
-              /* redirect the stdout to the output of pipe pd */
-              redirect(1, pd);
-              cull(p);
-          }
-      }
-  }
-
-  int main() {      
-      int pd[2];  /* pipe descriptors */
-      pipe(pd);
-      if (fork()) { /* parent process */
-          redirect(0, pd);
-          sink();
-      } else {      /* child process */
-          redirect(1, pd);
-          source();
-      }
-  }
-```
-
+For the various tests described below, I wrote a short bash script that
+basically just runs that program and polled the number of forked processes.
 Here is a pipeline to run the coro-sieve program and keep track of the number of
 child processes it spawns. Basically we are running the `coro-sieve` program
 for *N* seconds, directing the output to nowhere, then monitoring the number of
-child processes that get spawned in the context of the program. This can be 
+child processes that get spawned in the context of the program. This can be
 the entrypoint of the container that we'll use for testing.
 
-```bash
+```sh
 #!/bin/bash
 
 timeout ${1}s coro-sieve > /dev/null &
 while :
 do 
-    num_children=$(pstree -p $! | wc -l)
+    unset nproc
+    nproc=$(pstree -p $! | wc -l)
     sleep 1
-    if [ $num_children == "0" ]; then
+    if [ $nproc == "0" ]; then
         exit 0
     else
-        echo $num_children
+        echo -e $(date) -- INFO -- coro-sieve forked $nproc processes
     fi
 done
 ```
@@ -180,63 +164,12 @@ the thousands after just a couple of seconds. This is the unoptimized version of
 the program from McIlroy's paper and running it confirms his suggestion that it
 is a hog of resources.
 
-
-> 3
-> 773
-> 1459
-> 1883
-> 2203
-> 2524
-> 2852
-> 3240
-> 3977
-> 4558
-> 5265
-> 5960
-> 6451
-> 6819
-> Terminated
-
 For our purposes though, it's ideal - we now have a program that we can use to test
 the behaviour of our system when it reaches the limit of allowable processes per
 user.
 
 ## Testing 
 
-In order to get somewhere close to the production environment, I'm testing on a
-fresh rocky 9.4 instance that has docker installed. The container runtime is
-different for our kubernetes nodes - rke2 doesn't use docker apparently.
-
-> [root@adam ~]# cat /etc/rocky-release
-> Rocky Linux release 9.4 (Blue Onyx)
-
-The vm that we're working with has 8 processors and 8G of memory.
-
-> [rocky@adam cgroups]$ nproc
-> 8
-> [rocky@adam cgroups]$ lsmem
-> RANGE                                 SIZE  STATE REMOVABLE BLOCK
-> 0x0000000000000000-0x000000003fffffff   1G online       yes   0-7
-> 0x0000000100000000-0x00000002bfffffff   7G online       yes 32-87
-> 
-> Memory block size:       128M
-> Total online memory:       8G
-> Total offline memory:      0B
-
-
-Interestingly the default limits are set quite a bit lower that those gleaned
-from the VM at the beginning of this document. Both vms were spun up on
-different proxmox instances, so this might be something that gets set at the
-cloud provider level.
-
-> [rocky@adam cgroups]$ ulimit -u
-> 3296
-> [root@adam ~]# systemctl show |grep DefaultLimitNPROC
-> DefaultLimitNPROC=3296
-> DefaultLimitNPROCSoft=3296
-
-Okay, so basically we want to see what happens to the VM when we try to run
-`coro-sieve` as a user, which spins up more than the allowable maximum.
 
 ### Directly on the system
 
@@ -249,25 +182,27 @@ The program only ran for around 1 min and 15 seconds and managed to fork around
 here probably have to do with the fact that our cpus are all pretty busy
 incrementing away.
 
-> [rocky@adam cgroups]$ # ./entrypoint.sh 600
-> [rocky@adam cgroups]$ echo $(date) coro-sieve start
-> Mon Nov 18 03:32:46 PM UTC 2024 coro-sieve start
->  Mon Nov 18 03:34:00 PM UTC 2024 coro-sieve end with 456 children
-> ./entrypoint.sh: fork: retry: Resource temporarily unavailable
-> ./entrypoint.sh: fork: retry: Resource temporarily unavailable
-> ...
+```sh
+[rocky@adam cgroups]$ # ./entrypoint.sh 600
+...
+Mon Nov 18 03:34:00 PM UTC 2024 -- INFO -- coro-sieve forked 456 processes
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+...
+```
 
 The second time around it ran for a little bit longer (around 3 mins) and
 managed to spawn 2149 children.
 
-> [rocky@adam cgroups]$ echo $(date) coro-sieve start
-> Mon Nov 18 03:38:45 PM UTC 2024 coro-sieve start
-> [rocky@adam cgroups]$ # ./entrypoint.sh 600
->  Mon Nov 18 03:41:51 PM UTC 2024 coro-sieve end with 2149 children
-> ./entrypoint.sh: fork: retry: Resource temporarily unavailable
-> ./entrypoint.sh: fork: retry: Resource temporarily unavailable
-> ...
-
+```sh
+[rocky@adam cgroups]$ echo $(date) coro-sieve start
+Mon Nov 18 03:38:45 PM UTC 2024 coro-sieve start
+[rocky@adam cgroups]$ # ./entrypoint.sh 600
+ Mon Nov 18 03:41:51 PM UTC 2024 coro-sieve end with 2149 children
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+./entrypoint.sh: fork: retry: Resource temporarily unavailable
+...
+```
 
 #### System limits
 
@@ -276,7 +211,7 @@ module. The limits of number of processes allowed for the user rocky can be
 set as follows:
 
 
-```
+```sh
 [rocky@adam cgroups]$ cat > /etc/security/limits.d/rocky.conf <<EOF
 @rocky hard nproc 2048
 @rocky soft nproc 2048
@@ -286,7 +221,7 @@ EOF
 Another run of our test program, shows that it runs into trouble more 
 or less where we expect.
 
-```
+```sh
  Tue Nov 19 08:51:59 AM UTC 2024 coro-sieve end with 2038 children
 ./entrypoint.sh: fork: retry: Resource temporarily unavailable
 ./entrypoint.sh: fork: retry: Resource temporarily unavailable
@@ -303,13 +238,13 @@ below, but here briefly is how you would set up cgroup limits for a user using
 systemd. Specifically, `systemd.resource-control` will look for config files in
 the form of "Slices".
 
-```
+```sh
 cat > /etc/systemd/system/user-1000.slice.d/limits.conf <<EOF
 [Slice]
 TasksMax=1024
 ```
 
-```
+```sh
 [rocky@adam ~]$ systemctl show user-1000.slice |grep TasksMax
 TasksMax=1024
 [rocky@adam ~]$ ~/cgroups/entrypoint.sh 300
@@ -323,7 +258,7 @@ The important question though is how will the program behave if the limits set
 by configuring `pam_limits` conflict with those configured through
 `systemd.resource-control`?
 
-```
+```sh
 [rocky@adam ~]$ ulimit -u
 512
 [rocky@adam ~]$ cat /etc/security/limits.d/user-1000.conf
@@ -337,7 +272,7 @@ TasksMax=1024
 We run into trouble when the program hits the limts set by
 `/etc/security/limits.d`, i.e. the config values supplied to `pam_limits`.
 
-```
+```sh
  Tue Nov 19 02:48:57 PM UTC 2024 coro-sieve end with 489 children
 ./entrypoint.sh: fork: retry: Resource temporarily unavailable
 ./entrypoint.sh: fork: retry: Resource temporarily unavailable
@@ -362,7 +297,67 @@ found ways to do similiar things with docker-compose and systemd[^3].
 So where do the ulimits get set for the service? Initially, I thought that 
 adding a Tas
 
+```sh
+[root@adam ~]# systemctl start docker-compose@coro-sieve
+[root@adam ~]# docker logs coro-sieve-coro-sieve-1
+Wed Nov 20 11:38:58 UTC 2024 -- INFO -- coro-sieve forked 3 children
+/app/entrypoint.sh: fork: retry: Resource temporarily unavailable
+/app/entrypoint.sh: fork: retry: Resource temporarily unavailable
+...
+```
+
+
+```yaml
+services:
+  coro-sieve:
+    build: .
+    image: coro-sieve:test
+    deploy:
+      resources:
+        limits:
+          pids: 256
+    stdin_open: true
+    tty: true
+    command: ${TIMEOUT:-120}
+```
+
+
+```sh
+[root@adam coro-sieve]# grep LimitNPROC /usr/lib/systemd/system/docker.service
+LimitNPROC=infinity
+```
+
+```sh
+[root@adam coro-sieve]# sed -i 's/^\(LimitNPROC=\)\(infinity\)/\1128/g' /usr/lib/systemd/system/docker.service
+[root@adam coro-sieve]# grep LimitNPROC /usr/lib/systemd/system/docker.service
+LimitNPROC=128
+```
+
+```sh
+[root@adam coro-sieve]# sed -i 's/\(pids: \)\(256\)/\11024/g' /etc/docker/compose/coro-sieve/docker-compose.yml
+[root@adam coro-sieve]# grep pids: /etc/docker/compose/coro-sieve/docker-compose.yml
+          pids: 1024
+```
+
+I had assumed that the limits set in the `docker.service` unit file would be the
+limiting factor, but it looks like the cgroups setting in the docker-compose
+file are the ones that take precedence. This is interesting, because it means
+that _both_ the `ulimit -u` limits and the `docker.service` limits can be
+bypassed.
+
+```sh
+[root@adam ~]# docker logs coro-sieve-coro-sieve-1
+Wed Nov 20 11:48:03 UTC 2024 -- INFO -- coro-sieve forked 1 children
+Wed Nov 20 11:48:04 UTC 2024 -- INFO -- coro-sieve forked 185 children
+...
+Wed Nov 20 11:49:05 UTC 2024 -- INFO -- coro-sieve forked 1013 children
+Wed Nov 20 11:49:07 UTC 2024 -- INFO -- coro-sieve forked 1018 children
+/app/entrypoint.sh: fork: retry: Resource temporarily unavailable
+/app/entrypoint.sh: fork: retry: Resource temporarily unavailable
+...
+```
 
 [^1]: <https://dl.acm.org/doi/10.1145/359576.359585>
 [^2]: <https://www.cs.dartmouth.edu/~doug/sieve/sieve.pdf>
 [^3]: <https://gist.github.com/mosquito/b23e1c1e5723a7fd9e6568e5cf91180f>
+[^4]: <https://lists.proxmox.com/pipermail/pve-user/2023-August/017214.html>

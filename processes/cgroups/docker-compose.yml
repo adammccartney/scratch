@@ -2,6 +2,10 @@ services:
   coro-sieve:
     build: .
     image: coro-sieve:test
+    deploy:
+      resources:
+        limits:
+          pids: 256
     stdin_open: true
     tty: true
     command: ${TIMEOUT:-120}
