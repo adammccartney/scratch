@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+_usage () {
+    printf "${BASH_SOURCE[0]} [CMD (test|build_install)] [SWS-VERSION (2025.06)] [TOOLCHAIN (intel-2025a)] [EB_VERSION (5.2.0)] [EB OPTS]\n"
+}
+
+if [ "$#" -lt 3 ]; then
+    _usage
+    exit 1
+fi
+
+CMD="$1"
+SWS_VER="$2"
+TOOLCHAIN="$3"
+shift 3
+EB_OPTS="$@"
+
+/home/adam/go/bin/dummy-builder "$CMD" "$SWS_VER" "$TOOLCHAIN" "$EB_OPTS" | \
+    docker run --rm -i marvin-test:2 /usr/bin/bash -s -
