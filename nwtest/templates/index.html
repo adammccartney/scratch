@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>This is a network test - Index</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* ASC Corporate Identity Colors */
+            --asc-red: #D62828;
+            --asc-red-dark: #B51B1B;
+            --asc-grey: #6D6E71;
+            --asc-grey-light: #E6E7E8;
+            --asc-grey-dark: #333333;
+            --asc-white: #FFFFFF;
+            --asc-black: #000000;
+            --asc-bg: #F5F5F5;
+            
+            /* UI Colors */
+            --bg-primary: var(--asc-white);
+            --bg-secondary: var(--asc-bg);
+            --text-primary: var(--asc-grey-dark);
+            --text-secondary: var(--asc-grey);
+            --border-color: var(--asc-grey-light);
+            --accent-color: var(--asc-red);
+            --accent-hover: var(--asc-red-dark);
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background-color: var(--bg-secondary);
+            margin: 0;
+            padding: 0;
+        }
+        
+        /* Header with ASC branding */
+        .site-header {
+            background: var(--asc-white);
+            border-bottom: 4px solid var(--asc-red);
+            padding: 30px 40px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+        
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+        
+        .brand-logo {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--asc-red);
+            letter-spacing: -0.5px;
+        }
+        
+        .brand-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 15px;
+            font-weight: 400;
+        }
+        
+        /* Main content */
+        .main-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px;
+            background: var(--bg-primary);
+            min-height: calc(100vh - 200px);
+        }
+        
+        /* Footer */
+        .site-footer {
+            background: var(--asc-grey-dark);
+            color: var(--asc-white);
+            padding: 30px 40px;
+            margin-top: 40px;
+        }
+        
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            text-align: center;
+            font-size: 14px;
+            color: var(--asc-grey-light);
+        }
+        
+        .footer-content a {
+            color: var(--asc-white);
+            text-decoration: none;
+        }
+        
+        .footer-content a:hover {
+            color: var(--asc-red);
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .site-header {
+                padding: 20px;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+            
+            .brand {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="site-header">
+        <div class="header-content">
+            <div class="brand">
+                <span class="brand-logo">ASC</span>
+                <h1 class="brand-title"></h1>
+            </div>
+            <p class="subtitle">Send some bytes over the network to test flow</p>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <p class="test-data" id="test-data">
+        {{ range . }}
+            {{ . }}<br>
+        {{ end }}
+        </p>
+    </main>
+
+    <footer class="site-footer">
+        <div class="footer-content">
+            <p>Austrian Scientific Computing &copy; 2026 | <a href="https://asc.ac.at" target="_blank">asc.ac.at</a></p>
+        </div>
+    </footer>
+
+    <script>
+    </script>
+</body>
+</html>
