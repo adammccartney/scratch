@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"os"
@@ -11,6 +12,25 @@ import (
 	"strings"
 	"time"
 )
+
+const scriptText = `#!/usr/bin/env bash
+#ASC --vanilla
+#SBATCH -p zen4_0768
+#SBATCH -N 1
+#SBATCH --exclusive
+
+set -euo pipefail
+
+{{ .BuildCommand }}
+`
+
+var sbatchTemplate = template.Must(
+	template.New("sbatch").Parse(scriptText),
+)
+
+type ScriptData struct {
+	BuildCommand string
+}
 
 type CmdConfig struct {
 	Args    []string
@@ -89,11 +109,49 @@ func (s *SbatchSubmitter) Submit(script []byte) (string, error) {
 	return jobID, nil
 }
 
+func RenderScript(data ScriptData, w io.Writer) error {
+	if err := sbatchTemplate.Execute(w, data); err != nil {
+		return fmt.Errorf("execute sbatch template: %w", err)
+	}
+	return nil
+}
+
+type BuildEnvTest struct {
+	SwsVariant string
+	Buildenv   string
+}
+
 func main() {
 	sub := NewSbatchSubmitter(nil)
-	payload := []byte("#!/usr/bin/env bash\necho build\n")
-	jobID, err := sub.Submit(payload)
-	if err != nil {
-		log.Fatalf("Submit: %v", err)
+	sub.Cfg.Env = os.Environ()
+
+	var tests = []BuildEnvTest{
+		BuildEnvTest{"2023.06", "2023b"},
+		BuildEnvTest{"2025.06", "2024a"},
+		BuildEnvTest{"2025.06", "2024b"},
+		BuildEnvTest{"2025.06", "2025a"},
+	}
+
+	for _, t,  := range tests {
+		var script bytes.Buffer
+		data := ScriptData{
+			BuildCommand: fmt.Sprintf(`module --force purge;
+			module load EESSI/%s;
+			module load buildenv/default-foss-%s;
+			make;
+
+			ls -l $EBROOTOPENBLAS`, t.SwsVariant, t.Buildenv),
+		}
+
+		if err := RenderScript(data, &script); err != nil {
+			log.Fatalf("RenderScript: %v", err)
+		}
+
+		jobID, err := sub.Submit(script.Bytes())
+		if err != nil {
+			log.Fatalf("Submit: %v", err)
+		}
+
+		fmt.Printf("submitted job with id: %s\n", jobID)
 	}
 }
